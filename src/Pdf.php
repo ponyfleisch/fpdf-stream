@@ -17,6 +17,9 @@ class Pdf
     var $n; // current object number
     var $offsets; // array of object offsets
     var $buffer; // buffer holding in-memory PDF
+    var $currentPage;
+    var $currentPageSize;
+    var $outputSize = 0; // size of pdf so far
     var $pages; // array containing pages
     var $state; // current document state
     var $compress; // compression flag
@@ -75,7 +78,7 @@ class Pdf
      *                               Public methods                                 *
      *                                                                              *
      *******************************************************************************/
-    function FPDF($orientation = 'P', $unit = 'mm', $size = 'A4')
+    function __construct($orientation = 'P', $unit = 'mm', $size = 'A4')
     {
         // Some checks
         $this->_dochecks();
@@ -300,6 +303,9 @@ class Pdf
 
     function AddPage($orientation = '', $size = '')
     {
+        // $this->clearPage();
+
+
         // Start a new page
         if ($this->state == 0)
             $this->Open();
@@ -964,7 +970,7 @@ class Pdf
                 $f = fopen($name, 'wb');
                 if (!$f)
                     $this->Error('Unable to create output file: ' . $name);
-                fwrite($f, $this->buffer, strlen($this->buffer));
+                fwrite($f, $this->buffer, $this->outputSize);
                 fclose($f);
                 break;
             case 'S':
@@ -1029,7 +1035,8 @@ class Pdf
     function _beginpage($orientation, $size)
     {
         $this->page++;
-        $this->pages[$this->page] = '';
+        // $this->pages[$this->page] = '';
+        $this->currentPage = '';
         $this->state = 2;
         $this->x = $this->lMargin;
         $this->y = $this->tMargin;
@@ -1058,13 +1065,15 @@ class Pdf
             $this->CurOrientation = $orientation;
             $this->CurPageSize = $size;
         }
+        $this->currentPageSize = null;
         if ($orientation != $this->DefOrientation || $size[0] != $this->DefPageSize[0] || $size[1] != $this->DefPageSize[1])
-            $this->PageSizes[$this->page] = array($this->wPt, $this->hPt);
+            $this->currentPageSize = array($this->wPt, $this->hPt);
     }
 
     function _endpage()
     {
         $this->state = 1;
+        $this->putPage();
     }
 
     function _loadfont($font)
@@ -1332,7 +1341,7 @@ class Pdf
     {
         // Begin a new object
         $this->n++;
-        $this->offsets[$this->n] = strlen($this->buffer);
+        $this->offsets[$this->n] = $this->outputSize;
         $this->_out($this->n . ' 0 obj');
     }
 
@@ -1346,10 +1355,15 @@ class Pdf
     function _out($s)
     {
         // Add a line to the document
-        if ($this->state == 2)
-            $this->pages[$this->page] .= $s . "\n";
-        else
-            $this->buffer .= $s . "\n";
+        if ($this->state == 2){
+            $this->currentPage .= $s . "\n";
+
+        }else{
+            $s .= "\n";
+            // $this->buffer .= $s . "\n";
+            $this->outputSize += strlen($s);
+            echo $s;
+        }
     }
 
     function _putpages()
@@ -1404,7 +1418,7 @@ class Pdf
             $this->_out('endobj');
         }
         // Pages root
-        $this->offsets[1] = strlen($this->buffer);
+        $this->offsets[1] = $this->outputSize;
         $this->_out('1 0 obj');
         $this->_out('<</Type /Pages');
         $kids = '/Kids [';
@@ -1415,6 +1429,54 @@ class Pdf
         $this->_out(sprintf('/MediaBox [0 0 %.2F %.2F]', $wPt, $hPt));
         $this->_out('>>');
         $this->_out('endobj');
+    }
+
+    private function putPage()
+    {
+        $nb = $this->page;
+
+        $this->_newobj();
+        $filter = ($this->compress) ? '/Filter /FlateDecode ' : '';
+        $this->_out('<</Type /Page');
+        $this->_out('/Parent 1 0 R');
+        if (isset($this->currentPageSize))
+            $this->_out(sprintf('/MediaBox [0 0 %.2F %.2F]', $this->currentPageSize[0], $this->currentPageSize[1]));
+        $this->_out('/Resources 2 0 R');
+
+        /* let's not worry about links for now..
+
+        if (isset($this->PageLinks[$n])) {
+            // Links
+            $annots = '/Annots [';
+            foreach ($this->PageLinks[$n] as $pl) {
+                $rect = sprintf('%.2F %.2F %.2F %.2F', $pl[0], $pl[1], $pl[0] + $pl[2], $pl[1] - $pl[3]);
+                $annots .= '<</Type /Annot /Subtype /Link /Rect [' . $rect . '] /Border [0 0 0] ';
+                if (is_string($pl[4]))
+                    $annots .= '/A <</S /URI /URI ' . $this->_textstring($pl[4]) . '>>>>';
+                else {
+                    $l = $this->links[$pl[4]];
+                    $h = isset($this->PageSizes[$l[0]]) ? $this->PageSizes[$l[0]][1] : $hPt;
+                    $annots .= sprintf('/Dest [%d 0 R /XYZ 0 %.2F null]>>', 1 + 2 * $l[0], $h - $l[1] * $this->k);
+                }
+            }
+            $this->_out($annots . ']');
+        }
+
+        */
+
+        if ($this->PDFVersion > '1.3')
+            $this->_out('/Group <</Type /Group /S /Transparency /CS /DeviceRGB>>');
+        $this->_out('/Contents ' . ($this->n + 1) . ' 0 R>>');
+        $this->_out('endobj');
+        // Page content
+        $p = ($this->compress) ? gzcompress($this->currentPage) : $this->currentPage;
+        $this->_newobj();
+        $this->_out('<<' . $filter . '/Length ' . strlen($p) . '>>');
+        $this->_putstream($p);
+        $this->_out('endobj');
+
+        $this->currentPage = '';
+
     }
 
     function _putfonts()
@@ -1583,7 +1645,7 @@ class Pdf
         $this->_putfonts();
         $this->_putimages();
         // Resource dictionary
-        $this->offsets[2] = strlen($this->buffer);
+        $this->offsets[2] = $this->outputSize;
         $this->_out('2 0 obj');
         $this->_out('<<');
         $this->_putresourcedict();
@@ -1593,7 +1655,9 @@ class Pdf
 
     function _putinfo()
     {
-        $this->_out('/Producer ' . $this->_textstring('Fpdf-stream ' . $this::VERSION));
+        // $this->_out('/Producer ' . $this->_textstring('Fpdf-stream ' . $this::VERSION));
+        $this->_out('/Producer '.$this->_textstring('FPDF 1.7'));
+
         if (!empty($this->title))
             $this->_out('/Title ' . $this->_textstring($this->title));
         if (!empty($this->subject))
@@ -1657,7 +1721,7 @@ class Pdf
         $this->_out('>>');
         $this->_out('endobj');
         // Cross-ref
-        $o = strlen($this->buffer);
+        $o = $this->outputSize;
         $this->_out('xref');
         $this->_out('0 ' . ($this->n + 1));
         $this->_out('0000000000 65535 f ');
@@ -1673,4 +1737,69 @@ class Pdf
         $this->_out('%%EOF');
         $this->state = 3;
     }
+
+    function startOutput()
+    {
+        $this->_putheader();
+    }
+
+    function endOutput(){
+        if($this->state == 2){
+            $this->_endpage();
+        }
+
+        if ($this->DefOrientation == 'P') {
+            $wPt = $this->DefPageSize[0] * $this->k;
+            $hPt = $this->DefPageSize[1] * $this->k;
+        } else {
+            $wPt = $this->DefPageSize[1] * $this->k;
+            $hPt = $this->DefPageSize[0] * $this->k;
+        }
+
+        $this->offsets[1] = $this->outputSize;
+        $this->_out('1 0 obj');
+        $this->_out('<</Type /Pages');
+        $kids = '/Kids [';
+        for ($i = 0; $i < $this->page; $i++)
+            $kids .= (3 + 2 * $i) . ' 0 R ';
+        $this->_out($kids . ']');
+        $this->_out('/Count ' . $this->page);
+        $this->_out(sprintf('/MediaBox [0 0 %.2F %.2F]', $wPt, $hPt));
+        $this->_out('>>');
+        $this->_out('endobj');
+
+        $this->_putresources();
+
+
+        // Info
+        $this->_newobj();
+        $this->_out('<<');
+        $this->_putinfo();
+        $this->_out('>>');
+        $this->_out('endobj');
+        // Catalog
+        $this->_newobj();
+        $this->_out('<<');
+        $this->_putcatalog();
+        $this->_out('>>');
+        $this->_out('endobj');
+        // Cross-ref
+        $o = $this->outputSize;
+        $this->_out('xref');
+        $this->_out('0 ' . ($this->n + 1));
+        $this->_out('0000000000 65535 f ');
+        for ($i = 1; $i <= $this->n; $i++)
+            $this->_out(sprintf('%010d 00000 n ', $this->offsets[$i]));
+        // Trailer
+        $this->_out('trailer');
+        $this->_out('<<');
+        $this->_puttrailer();
+        $this->_out('>>');
+        $this->_out('startxref');
+        $this->_out($o);
+        $this->_out('%%EOF');
+        $this->state = 3;
+
+    }
+
 }
