@@ -1745,6 +1745,10 @@ class Pdf
 
     function endOutput(){
         if($this->state == 2){
+            $this->InFooter = true;
+            $this->Footer();
+            $this->InFooter = false;
+
             $this->_endpage();
         }
 
